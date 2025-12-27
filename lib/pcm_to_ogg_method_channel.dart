@@ -34,4 +34,50 @@ class MethodChannelPcmToOgg extends PcmToOggPlatform {
         });
     return result!;
   }
+
+  // Streaming encoder methods - Method channel doesn't support streaming yet
+  @override
+  Future<StreamingEncoderHandle> createStreamingEncoder({
+    required int channels,
+    required int sampleRate,
+    double quality = 0.4,
+  }) async {
+    final StreamingEncoderHandle? handle = await methodChannel
+        .invokeMethod<StreamingEncoderHandle>('createStreamingEncoder', {
+          'channels': channels,
+          'sampleRate': sampleRate,
+          'quality': quality,
+        });
+    return handle!;
+  }
+
+  @override
+  Future<Uint8List?> encodeStreamingChunk(
+    StreamingEncoderHandle handle,
+    Float32List pcmChunk,
+  ) async {
+    final Uint8List? result = await methodChannel.invokeMethod<Uint8List>(
+      'encodeStreamingChunk',
+      {'handle': handle, 'pcmChunk': pcmChunk},
+    );
+    return result!;
+  }
+
+  @override
+  Future<Uint8List> finishStreamingEncoding(
+    StreamingEncoderHandle handle,
+  ) async {
+    final Uint8List? result = await methodChannel.invokeMethod<Uint8List>(
+      'finishStreamingEncoding',
+      {'handle': handle},
+    );
+    return result!;
+  }
+
+  @override
+  Future<void> disposeStreamingEncoder(StreamingEncoderHandle handle) async {
+    await methodChannel.invokeMethod<void>('disposeStreamingEncoder', {
+      'handle': handle,
+    });
+  }
 }

@@ -8,6 +8,34 @@
 
 #include "pcm_to_ogg_plugin_private.h"
 
+// Force linking of FFI symbols from pcm_to_ogg_library
+// This ensures the symbols are included in the shared library
+extern "C" {
+  // Forward declaration for OggOutput struct
+  struct OggOutput;
+  typedef struct OggOutput OggOutput;
+  
+  // Non-streaming encoding functions
+  void* encode_pcm_to_ogg(float*, long, int, long, float);
+  void free_ogg_output(OggOutput*);
+  
+  // Streaming encoding functions
+  void* create_ogg_encoder(int, long, float);
+  OggOutput* encode_pcm_chunk(void*, float*, long);
+  OggOutput* finish_encoding(void*);
+  void destroy_ogg_encoder(void*);
+  
+  // Keep references to ensure linking (will be optimized away but forces symbol inclusion)
+  static void* _dummy_refs __attribute__((used)) = (void*[]){
+    (void*)encode_pcm_to_ogg,
+    (void*)free_ogg_output,
+    (void*)create_ogg_encoder,
+    (void*)encode_pcm_chunk,
+    (void*)finish_encoding,
+    (void*)destroy_ogg_encoder,
+  };
+}
+
 #define PCM_TO_OGG_PLUGIN(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj), pcm_to_ogg_plugin_get_type(), \
                               PcmToOggPlugin))

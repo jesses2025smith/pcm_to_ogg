@@ -23,7 +23,10 @@ add_library(${PLUGIN_NAME} SHARED
 )
 
 # Add our shared C/C++ code from the src directory.
-add_subdirectory(../../src ${CMAKE_BINARY_DIR}/src)
+# Use CMAKE_CURRENT_SOURCE_DIR to get the directory containing this CMakeLists.txt,
+# then go up one level to the plugin root, then into src.
+get_filename_component(PLUGIN_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
+add_subdirectory(${PLUGIN_ROOT_DIR}/src ${CMAKE_BINARY_DIR}/src)
 
 
 # Apply a standard set of build settings that are configured in the
@@ -47,6 +50,12 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
 # Link our own library
 target_link_libraries(${PLUGIN_NAME} PRIVATE pcm_to_ogg_library)
+
+# For Linux, export dynamic symbols for FFI access
+# The symbols are forced to be linked via pcm_to_ogg_plugin.cc
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(${PLUGIN_NAME} PRIVATE -Wl,--export-dynamic)
+endif()
 
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an

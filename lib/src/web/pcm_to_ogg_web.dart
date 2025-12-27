@@ -1,10 +1,22 @@
+// ignore_for_file: library_private_types_in_public_api
+
 import 'dart:async';
-import 'dart:html' as html;
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
+import 'package:web/web.dart' as web;
 import '../pcm_to_ogg_platform_interface.dart';
+
+/// Web platform implementation of StreamingEncoderHandle using int address
+class _WebStreamingEncoderHandle implements StreamingEncoderHandle {
+  final int _address;
+
+  const _WebStreamingEncoderHandle(this._address);
+
+  @override
+  int get address => _address;
+}
 
 // Extension for the result of WebAssembly.instantiate
 extension type WasmInstantiateResult._(JSObject _) implements JSObject {
@@ -37,6 +49,24 @@ extension type _WasmExports._(JSObject _) implements JSObject {
   @JS('_free_ogg_output')
   external void free_ogg_output(JSNumber ptr);
 
+  // Streaming encoding functions
+  @JS('_create_ogg_encoder')
+  external JSNumber create_ogg_encoder(
+    JSNumber channels,
+    JSNumber sampleRate,
+    JSNumber quality,
+  );
+  @JS('_encode_pcm_chunk')
+  external JSNumber encode_pcm_chunk(
+    JSNumber encoderCtx,
+    JSNumber pcmData,
+    JSNumber numSamples,
+  );
+  @JS('_finish_encoding')
+  external JSNumber finish_encoding(JSNumber encoderCtx);
+  @JS('_destroy_ogg_encoder')
+  external void destroy_ogg_encoder(JSNumber encoderCtx);
+
   // Thuộc tính heap views được cung cấp bởi Emscripten
   @JS('HEAPU8')
   external JSUint8Array get HEAPU8;
@@ -66,6 +96,7 @@ class PcmToOggWeb extends PcmToOggPlatform {
 
   PcmToOggWeb();
 
+  @override
   Future<void> initialize() async {
     if (_isInitialized && _wasmModule != null && _wasmExports != null) {
       return;
@@ -74,13 +105,14 @@ class PcmToOggWeb extends PcmToOggPlatform {
 
     // 1. If the factory doesn't exist, inject the script and wait for it.
     if (!globalContext.hasProperty('PcmToOggModuleFactory'.toJS).toDart) {
-      final script = html.ScriptElement()
+      final script = web.HTMLScriptElement()
         ..type = 'module'
-        ..innerHtml = '''
+        ..innerHTML = '''
           import createPcmToOggModule from '/pcm_to_ogg.js';
           window.PcmToOggModuleFactory = createPcmToOggModule;
-        ''';
-      html.document.head!.append(script);
+        '''
+            .toJS;
+      web.document.head!.appendChild(script);
 
       // 2. Poll to check when the factory is available.
       const maxRetries = 200; // Wait up to 10 seconds
@@ -203,12 +235,10 @@ class PcmToOggWeb extends PcmToOggPlatform {
 
       try {
         // --- BƯỚC 3: ĐỌC KẾT QUẢ TỪ WASM ---
-        final dataPtr = _wasmExports!
-            .get_ogg_output_data(resultPtr.toJS)
-            .toDartInt;
-        final size = _wasmExports!
-            .get_ogg_output_size(resultPtr.toJS)
-            .toDartInt;
+        final dataPtr =
+            _wasmExports!.get_ogg_output_data(resultPtr.toJS).toDartInt;
+        final size =
+            _wasmExports!.get_ogg_output_size(resultPtr.toJS).toDartInt;
 
         if (dataPtr == 0) {
           throw Exception(
@@ -236,5 +266,143 @@ class PcmToOggWeb extends PcmToOggPlatform {
       // Luôn giải phóng bộ đệm PCM đã cấp phát
       _wasmExports!.free(pcmPtr.toJS);
     }
+  }
+
+  @override
+  Future<StreamingEncoderHandle> createStreamingEncoder({
+    required int channels,
+    required int sampleRate,
+    double quality = 0.4,
+  }) async {
+    await initialize();
+
+    if (_wasmExports == null || _wasmModule == null) {
+      if (!_isInitialized) {
+        throw Exception('Wasm module initialization failed or never ran.');
+      }
+      throw Exception(
+        'Wasm module references are null despite initialization.',
+      );
+    }
+
+    final encoderCtxPtr = _wasmExports!
+        .create_ogg_encoder(channels.toJS, sampleRate.toJS, quality.toJS)
+        .toDartInt;
+
+    if (encoderCtxPtr == 0) {
+      throw Exception('Failed to create OGG streaming encoder');
+    }
+
+    return _WebStreamingEncoderHandle(encoderCtxPtr);
+  }
+
+  @override
+  Future<Uint8List?> encodeStreamingChunk(
+    StreamingEncoderHandle handle,
+    Float32List pcmChunk,
+  ) async {
+    await initialize();
+
+    if (_wasmExports == null || _wasmModule == null) {
+      throw Exception('Wasm module not initialized');
+    }
+
+    final encoderCtxPtr = handle.address;
+
+    // Allocate memory for PCM data
+    final pcmDataSize = pcmChunk.length * pcmChunk.elementSizeInBytes;
+    final pcmPtr = _wasmExports!.malloc(pcmDataSize.toJS).toDartInt;
+
+    if (pcmPtr == 0) {
+      throw Exception('Wasm _malloc failed to allocate memory for PCM data.');
+    }
+
+    try {
+      // Write PCM data to WASM heap
+      final JSFloat32Array wasmHeapF32View = _wasmExports!.HEAPF32;
+      wasmHeapF32View.set(pcmChunk.toJS, pcmPtr >> 2);
+
+      // Call encoding function
+      final resultPtr = _wasmExports!
+          .encode_pcm_chunk(
+            encoderCtxPtr.toJS,
+            pcmPtr.toJS,
+            pcmChunk.length.toJS,
+          )
+          .toDartInt;
+
+      if (resultPtr == 0) {
+        return null; // No data ready yet
+      }
+
+      try {
+        // Read result
+        final dataPtr =
+            _wasmExports!.get_ogg_output_data(resultPtr.toJS).toDartInt;
+        final size =
+            _wasmExports!.get_ogg_output_size(resultPtr.toJS).toDartInt;
+
+        if (dataPtr == 0 || size == 0) {
+          return null;
+        }
+
+        // Read data from heap
+        final JSUint8Array heapU8View = _wasmExports!.HEAPU8;
+        final oggData = heapU8View.slice(dataPtr, dataPtr + size).toDart;
+        return oggData;
+      } finally {
+        _wasmExports!.free_ogg_output(resultPtr.toJS);
+      }
+    } finally {
+      _wasmExports!.free(pcmPtr.toJS);
+    }
+  }
+
+  @override
+  Future<Uint8List> finishStreamingEncoding(
+    StreamingEncoderHandle handle,
+  ) async {
+    await initialize();
+
+    if (_wasmExports == null || _wasmModule == null) {
+      throw Exception('Wasm module not initialized');
+    }
+
+    final encoderCtxPtr = handle.address;
+
+    final resultPtr =
+        _wasmExports!.finish_encoding(encoderCtxPtr.toJS).toDartInt;
+
+    if (resultPtr == 0) {
+      throw Exception('Failed to finish encoding');
+    }
+
+    try {
+      final dataPtr =
+          _wasmExports!.get_ogg_output_data(resultPtr.toJS).toDartInt;
+      final size = _wasmExports!.get_ogg_output_size(resultPtr.toJS).toDartInt;
+
+      if (dataPtr == 0 || size == 0) {
+        return Uint8List(0);
+      }
+
+      final JSUint8Array heapU8View = _wasmExports!.HEAPU8;
+      final oggData = heapU8View.slice(dataPtr, dataPtr + size).toDart;
+      return oggData;
+    } finally {
+      _wasmExports!.free_ogg_output(resultPtr.toJS);
+    }
+  }
+
+  @override
+  Future<void> disposeStreamingEncoder(StreamingEncoderHandle handle) async {
+    await initialize();
+
+    if (_wasmExports == null || _wasmModule == null) {
+      throw Exception('Wasm module not initialized');
+    }
+
+    final encoderCtxPtr = handle.address;
+    _wasmExports!.destroy_ogg_encoder(encoderCtxPtr.toJS);
   }
 }

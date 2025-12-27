@@ -6,7 +6,7 @@ repository: https://github.com/mth2610/pcm_to_ogg
 issue_tracker: https://github.com/mth2610/pcm_to_ogg/issues
 
 environment:
-  sdk: ^3.9.2
+  sdk: '>=3.3.0 <4.0.0'
   flutter: '>=3.3.0'
 
 dependencies:
@@ -16,7 +16,7 @@ dependencies:
     sdk: flutter
   ffi: ^2.1.4
   plugin_platform_interface: ^2.0.2
-  http: ^1.5.0
+  web: ^1.0.0
 
 
 dev_dependencies:

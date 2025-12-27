@@ -17,6 +17,17 @@ typedef struct {
     int size;
 } OggOutput;
 
+// Encoding context structure for streaming encoding
+typedef struct {
+    ogg_stream_state os;
+    vorbis_info vi;
+    vorbis_comment vc;
+    vorbis_dsp_state vd;
+    vorbis_block vb;
+    int header_written;
+    int eos;
+} OggEncoderContext;
+
 // Define the export macro.
 // For native platforms, it ensures the symbol is visible.
 // For Emscripten, it ensures the function isn't optimized away and is exported.
@@ -187,6 +198,240 @@ void free_ogg_output(OggOutput* output) {
         }
         free(output);
     }
+}
+
+// ============================================================================
+// Streaming encoding functions
+// ============================================================================
+
+// Create an encoder context for streaming encoding
+EXPORT
+void* create_ogg_encoder(int channels, long sample_rate, float quality) {
+    OggEncoderContext* ctx = malloc(sizeof(OggEncoderContext));
+    if (!ctx) return NULL;
+
+    vorbis_info_init(&ctx->vi);
+    if (vorbis_encode_init_vbr(&ctx->vi, channels, sample_rate, quality)) {
+        free(ctx);
+        return NULL;
+    }
+
+    vorbis_analysis_init(&ctx->vd, &ctx->vi);
+    vorbis_block_init(&ctx->vd, &ctx->vb);
+    
+    srand(time(NULL));
+    ogg_stream_init(&ctx->os, rand());
+
+    vorbis_comment_init(&ctx->vc);
+    vorbis_comment_add_tag(&ctx->vc, "ENCODER", "pcm_to_ogg_plugin");
+
+    ctx->header_written = 0;
+    ctx->eos = 0;
+
+    return ctx;
+}
+
+// Get header data (called once at the beginning)
+static OggOutput* get_header(OggEncoderContext* ctx) {
+    if (!ctx || ctx->header_written) {
+        OggOutput* output = malloc(sizeof(OggOutput));
+        if (output) {
+            output->data = NULL;
+            output->size = 0;
+        }
+        return output;
+    }
+
+    ogg_page og;
+    ogg_packet header, header_comm, header_code;
+    vorbis_analysis_headerout(&ctx->vd, &ctx->vc, &header, &header_comm, &header_code);
+    ogg_stream_packetin(&ctx->os, &header);
+    ogg_stream_packetin(&ctx->os, &header_comm);
+    ogg_stream_packetin(&ctx->os, &header_code);
+
+    unsigned char* output_buffer = NULL;
+    size_t output_size = 0;
+
+    while(ogg_stream_flush(&ctx->os, &og)){
+        size_t new_size = output_size + og.header_len + og.body_len;
+        unsigned char* temp = realloc(output_buffer, new_size);
+        if (!temp) {
+            if (output_buffer) free(output_buffer);
+            return NULL;
+        }
+        output_buffer = temp;
+        memcpy(output_buffer + output_size, og.header, og.header_len);
+        memcpy(output_buffer + output_size + og.header_len, og.body, og.body_len);
+        output_size = new_size;
+    }
+
+    ctx->header_written = 1;
+
+    OggOutput* output = malloc(sizeof(OggOutput));
+    if (!output) {
+        if (output_buffer) free(output_buffer);
+        return NULL;
+    }
+    output->data = output_buffer;
+    output->size = (int)output_size;
+    return output;
+}
+
+// Encode a chunk of PCM data
+EXPORT
+OggOutput* encode_pcm_chunk(void* encoder_ctx, float* pcm_data, long num_samples) {
+    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+    if (!ctx) return NULL;
+
+    // If header hasn't been written, return it first
+    if (!ctx->header_written) {
+        return get_header(ctx);
+    }
+
+    int channels = ctx->vi.channels;
+    unsigned char* output_buffer = NULL;
+    size_t output_size = 0;
+    ogg_page og;
+    ogg_packet op;
+
+    long i = 0;
+    long read_size = 1024;
+
+    while (i < num_samples) {
+        long remaining = num_samples - i;
+        long samples_to_process = remaining / channels;
+        
+        if (samples_to_process == 0 && remaining > 0) {
+            samples_to_process = 1;
+        }
+        if (samples_to_process > read_size) {
+            samples_to_process = read_size;
+        }
+        if (samples_to_process <= 0) break;
+
+        float** buffer = vorbis_analysis_buffer(&ctx->vd, samples_to_process);
+
+        for (int c = 0; c < channels; c++) {
+            for (int j = 0; j < samples_to_process; j++) {
+                buffer[c][j] = pcm_data[i + j * channels + c];
+            }
+        }
+
+        i += samples_to_process * channels;
+        vorbis_analysis_wrote(&ctx->vd, samples_to_process);
+
+        while (vorbis_analysis_blockout(&ctx->vd, &ctx->vb) == 1) {
+            vorbis_analysis(&ctx->vb, NULL);
+            vorbis_bitrate_addblock(&ctx->vb);
+            while (vorbis_bitrate_flushpacket(&ctx->vd, &op)) {
+                ogg_stream_packetin(&ctx->os, &op);
+                while (!ctx->eos) {
+                    int result = ogg_stream_pageout(&ctx->os, &og);
+                    if (result == 0) break;
+                    size_t new_size = output_size + og.header_len + og.body_len;
+                    unsigned char* temp = realloc(output_buffer, new_size);
+                    if (!temp) {
+                        if (output_buffer) free(output_buffer);
+                        return NULL;
+                    }
+                    output_buffer = temp;
+                    memcpy(output_buffer + output_size, og.header, og.header_len);
+                    memcpy(output_buffer + output_size + og.header_len, og.body, og.body_len);
+                    output_size = new_size;
+                    if (ogg_page_eos(&og)) ctx->eos = 1;
+                }
+            }
+        }
+    }
+
+    OggOutput* output = malloc(sizeof(OggOutput));
+    if (!output) {
+        if (output_buffer) free(output_buffer);
+        return NULL;
+    }
+    output->data = output_buffer;
+    output->size = (int)output_size;
+    return output;
+}
+
+// Finish encoding (flush remaining data)
+EXPORT
+OggOutput* finish_encoding(void* encoder_ctx) {
+    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+    if (!ctx) return NULL;
+
+    // If header hasn't been written, return it
+    if (!ctx->header_written) {
+        return get_header(ctx);
+    }
+
+    unsigned char* output_buffer = NULL;
+    size_t output_size = 0;
+    ogg_page og;
+    ogg_packet op;
+
+    vorbis_analysis_wrote(&ctx->vd, 0);
+
+    while (vorbis_analysis_blockout(&ctx->vd, &ctx->vb) == 1) {
+        vorbis_analysis(&ctx->vb, NULL);
+        vorbis_bitrate_addblock(&ctx->vb);
+        while (vorbis_bitrate_flushpacket(&ctx->vd, &op)) {
+            ogg_stream_packetin(&ctx->os, &op);
+            while (!ctx->eos) {
+                int result = ogg_stream_pageout(&ctx->os, &og);
+                if (result == 0) break;
+                size_t new_size = output_size + og.header_len + og.body_len;
+                unsigned char* temp = realloc(output_buffer, new_size);
+                if (!temp) {
+                    if (output_buffer) free(output_buffer);
+                    return NULL;
+                }
+                output_buffer = temp;
+                memcpy(output_buffer + output_size, og.header, og.header_len);
+                memcpy(output_buffer + output_size + og.header_len, og.body, og.body_len);
+                output_size = new_size;
+                if (ogg_page_eos(&og)) ctx->eos = 1;
+            }
+        }
+    }
+
+    // Flush the stream
+    while (!ctx->eos && ogg_stream_flush(&ctx->os, &og)) {
+        size_t new_size = output_size + og.header_len + og.body_len;
+        unsigned char* temp = realloc(output_buffer, new_size);
+        if (!temp) {
+            if (output_buffer) free(output_buffer);
+            return NULL;
+        }
+        output_buffer = temp;
+        memcpy(output_buffer + output_size, og.header, og.header_len);
+        memcpy(output_buffer + output_size + og.header_len, og.body, og.body_len);
+        output_size = new_size;
+        if (ogg_page_eos(&og)) ctx->eos = 1;
+    }
+
+    OggOutput* output = malloc(sizeof(OggOutput));
+    if (!output) {
+        if (output_buffer) free(output_buffer);
+        return NULL;
+    }
+    output->data = output_buffer;
+    output->size = (int)output_size;
+    return output;
+}
+
+// Destroy encoder context
+EXPORT
+void destroy_ogg_encoder(void* encoder_ctx) {
+    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+    if (!ctx) return;
+
+    ogg_stream_clear(&ctx->os);
+    vorbis_block_clear(&ctx->vb);
+    vorbis_dsp_clear(&ctx->vd);
+    vorbis_comment_clear(&ctx->vc);
+    vorbis_info_clear(&ctx->vi);
+    free(ctx);
 }
 
 #ifdef ANDROID

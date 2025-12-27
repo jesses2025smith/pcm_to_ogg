@@ -5,10 +5,31 @@ project(pcm_to_ogg C)
 add_subdirectory(third_party/libogg-1.3.5)
 add_subdirectory(third_party/libvorbis-1.3.7)
 
+# For Linux and Android, enable position-independent code (-fPIC) for static libraries
+# This is required when linking static libraries into shared libraries
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    set_target_properties(ogg_static PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+    )
+    set_target_properties(vorbis_static PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+    )
+endif()
+
 # Create a library from our C wrapper source file.
 add_library(pcm_to_ogg_library
     pcm_to_ogg.c
 )
+
+# For Linux and Android, we need -fPIC to link static libraries into shared libraries
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+  set_target_properties(pcm_to_ogg_library PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+  )
+endif()
+
+# Don't set visibility preset here - let the C code's __attribute__((visibility("default"))) 
+# handle it. Setting C_VISIBILITY_PRESET would override the attribute.
 
 # Link our library against the vorbis static library.
 # vorbis_static already links against ogg_static.
@@ -34,13 +55,20 @@ if(FLUTTER_TARGET_WEB)
 endif()
 
 # --- Android Specific ---
-# Create a shared library for Android (JNI) from our static library.
+# Create a shared library for Android (JNI).
 # The name here must match what is loaded in the Dart code.
+# On Android, we directly compile the source into the shared library to ensure
+# all symbols (including streaming encoder functions) are exported.
 if(ANDROID)
     add_library(pcm_to_ogg SHARED
-        # We create an "empty" shared library and then link our static
-        # library to it. This effectively wraps our static lib in a shared lib.
         pcm_to_ogg.c
     )
-    target_link_libraries(pcm_to_ogg PRIVATE pcm_to_ogg_library)
+    target_link_libraries(pcm_to_ogg PRIVATE
+        vorbis_static
+        ogg_static
+    )
+    target_include_directories(pcm_to_ogg PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libogg-1.3.5/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libvorbis-1.3.7/include
+    )
 endif()
