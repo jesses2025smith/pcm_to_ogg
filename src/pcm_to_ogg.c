@@ -2,31 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <math.h>
-#include "ogg/ogg.h"
-#include "vorbis/vorbisenc.h"
+#include "pcm_to_ogg.h"
 
 // If compiling for the web with Emscripten, include its header
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
-
-// Define a structure to hold our output data, which will be returned to Dart.
-typedef struct {
-    unsigned char* data;
-    int size;
-} OggOutput;
-
-// Encoding context structure for streaming encoding
-typedef struct {
-    ogg_stream_state os;
-    vorbis_info vi;
-    vorbis_comment vc;
-    vorbis_dsp_state vd;
-    vorbis_block vb;
-    int header_written;
-    int eos;
-} OggEncoderContext;
 
 // Define the export macro.
 // For native platforms, it ensures the symbol is visible.
@@ -206,7 +187,7 @@ void free_ogg_output(OggOutput* output) {
 
 // Create an encoder context for streaming encoding
 EXPORT
-void* create_ogg_encoder(int channels, long sample_rate, float quality) {
+OggEncoderContext* create_ogg_encoder(int channels, long sample_rate, float quality) {
     OggEncoderContext* ctx = malloc(sizeof(OggEncoderContext));
     if (!ctx) return NULL;
 
@@ -279,8 +260,7 @@ static OggOutput* get_header(OggEncoderContext* ctx) {
 
 // Encode a chunk of PCM data
 EXPORT
-OggOutput* encode_pcm_chunk(void* encoder_ctx, float* pcm_data, long num_samples) {
-    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+OggOutput* encode_pcm_chunk(OggEncoderContext* ctx, float* pcm_data, long num_samples) {
     if (!ctx) return NULL;
 
     // If header hasn't been written, return it first
@@ -356,8 +336,7 @@ OggOutput* encode_pcm_chunk(void* encoder_ctx, float* pcm_data, long num_samples
 
 // Finish encoding (flush remaining data)
 EXPORT
-OggOutput* finish_encoding(void* encoder_ctx) {
-    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+OggOutput* finish_encoding(OggEncoderContext* ctx) {
     if (!ctx) return NULL;
 
     // If header hasn't been written, return it
@@ -422,8 +401,7 @@ OggOutput* finish_encoding(void* encoder_ctx) {
 
 // Destroy encoder context
 EXPORT
-void destroy_ogg_encoder(void* encoder_ctx) {
-    OggEncoderContext* ctx = (OggEncoderContext*)encoder_ctx;
+void destroy_ogg_encoder(OggEncoderContext* ctx) {
     if (!ctx) return;
 
     ogg_stream_clear(&ctx->os);
@@ -434,73 +412,4 @@ void destroy_ogg_encoder(void* encoder_ctx) {
     free(ctx);
 }
 
-#ifdef ANDROID
-#include <jni.h>
-
-// JNI wrapper for encode_pcm_to_ogg
-JNIEXPORT jlong JNICALL
-Java_com_example_pcm_1to_1ogg_PcmToOggPlugin_encodePcmToOgg(
-    JNIEnv* env,
-    jclass clazz,
-    jobject pcmData,
-    jlong numSamples,
-    jint channels,
-    jlong sampleRate,
-    jfloat quality) {
-
-    float* pcm_data_ptr = (float*)(*env)->GetDirectBufferAddress(env, pcmData);
-    if (pcm_data_ptr == NULL) {
-        return 0; // Failed to get direct buffer address
-    }
-
-    void* output_ptr = encode_pcm_to_ogg(
-        pcm_data_ptr,
-        (long)numSamples,
-        (int)channels,
-        (long)sampleRate,
-        (float)quality
-    );
-
-    return (jlong)output_ptr;
-}
-
-// JNI wrapper for get_ogg_output_data
-JNIEXPORT jobject JNICALL
-Java_com_example_pcm_1to_1ogg_PcmToOggPlugin_getOggOutputData(
-    JNIEnv* env,
-    jclass clazz,
-    jlong oggOutputPointer) {
-
-    OggOutput* output = (OggOutput*)oggOutputPointer;
-    if (output == NULL || output->data == NULL) {
-        return NULL;
-    }
-    return (*env)->NewDirectByteBuffer(env, output->data, output->size);
-}
-
-// JNI wrapper for get_ogg_output_size
-JNIEXPORT jint JNICALL
-Java_com_example_pcm_1to_1ogg_PcmToOggPlugin_getOggOutputSize(
-    JNIEnv* env,
-    jclass clazz,
-    jlong oggOutputPointer) {
-
-    OggOutput* output = (OggOutput*)oggOutputPointer;
-    if (output == NULL) {
-        return 0;
-    }
-    return (jint)get_ogg_output_size(output);
-}
-
-// JNI wrapper for free_ogg_output
-JNIEXPORT void JNICALL
-Java_com_example_pcm_1to_1ogg_PcmToOggPlugin_freeOggOutput(
-    JNIEnv* env,
-    jclass clazz,
-    jlong oggOutputPointer) {
-
-    OggOutput* output = (OggOutput*)oggOutputPointer;
-    free_ogg_output(output);
-}
-
-#endif // ANDROID
+// Android JNI implementations are in pcm_to_ogg_android.c

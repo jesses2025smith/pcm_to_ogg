@@ -1,4 +1,4 @@
-package com.example.pcm_to_ogg
+package com.github.pcm_to_ogg
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -36,6 +36,29 @@ class PcmToOggPlugin :
 
         @JvmStatic
         private external fun freeOggOutput(oggOutputPointer: Long)
+
+        // Streaming encoding functions
+        @JvmStatic
+        private external fun createOggEncoder(
+            channels: Int,
+            sampleRate: Long,
+            quality: Float
+        ): Long // Returns a pointer to OggEncoderContext
+
+        @JvmStatic
+        private external fun encodePcmChunk(
+            encoderContext: Long,
+            pcmData: ByteBuffer,
+            numSamples: Long
+        ): Long // Returns a pointer to OggOutput struct
+
+        @JvmStatic
+        private external fun finishEncoding(
+            encoderContext: Long
+        ): Long // Returns a pointer to OggOutput struct
+
+        @JvmStatic
+        private external fun destroyOggEncoder(encoderContext: Long)
     }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {

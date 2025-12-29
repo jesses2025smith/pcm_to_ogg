@@ -41,7 +41,7 @@ flutter:
     ffiPlugin: true
     platforms:
       android:
-        package: com.example.pcm_to_ogg
+        package: com.github.pcm_to_ogg
         pluginClass: PcmToOggPlugin
       ios:
         pluginClass: PcmToOggPlugin

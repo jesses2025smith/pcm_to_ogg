@@ -62,6 +62,7 @@ endif()
 if(ANDROID)
     add_library(pcm_to_ogg SHARED
         pcm_to_ogg.c
+        pcm_to_ogg_android.c
     )
     target_link_libraries(pcm_to_ogg PRIVATE
         vorbis_static

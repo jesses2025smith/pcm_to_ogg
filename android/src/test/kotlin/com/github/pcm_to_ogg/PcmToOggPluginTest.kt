@@ -1,4 +1,4 @@
-package com.example.pcm_to_ogg
+package com.github.pcm_to_ogg
 
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel

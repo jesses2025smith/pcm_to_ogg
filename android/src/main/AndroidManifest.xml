@@ -1,3 +1,3 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="com.example.pcm_to_ogg">
+  package="com.github.pcm_to_ogg">
 </manifest>

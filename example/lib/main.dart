@@ -36,6 +36,7 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   String _status = 'Press the button to start.';
   Uint8List? _oggData;
+  String? _tempOggFile; // Temporary file for playback on macOS
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   bool _isPluginReady = false;
@@ -56,8 +57,19 @@ class _MyAppState extends State<MyApp> {
   }
 
   @override
-  void dispose() {
-    _audioPlayer.dispose();
+  void dispose() async {
+    // Clean up temporary OGG file
+    if (_tempOggFile != null) {
+      try {
+        final file = File(_tempOggFile!);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        debugPrint('Failed to delete temp file: $e');
+      }
+    }
+    await _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -141,11 +153,24 @@ class _MyAppState extends State<MyApp> {
       );
       stopwatch.stop();
 
-      setState(() {
-        _status =
-            'Conversion successful in ${stopwatch.elapsedMilliseconds}ms! OGG data size: ${oggData.lengthInBytes} bytes.';
-        _oggData = oggData;
-      });
+      // For macOS and iOS, write to temporary file for playback compatibility
+      if (!kIsWeb && (Platform.isMacOS || Platform.isIOS)) {
+        final tempDir = await getTemporaryDirectory();
+        final tempFile = File('${tempDir.path}/playback_${DateTime.now().millisecondsSinceEpoch}.ogg');
+        await tempFile.writeAsBytes(oggData);
+        setState(() {
+          _status =
+              'Conversion successful in ${stopwatch.elapsedMilliseconds}ms! OGG data size: ${oggData.lengthInBytes} bytes.';
+          _oggData = oggData;
+          _tempOggFile = tempFile.path;
+        });
+      } else {
+        setState(() {
+          _status =
+              'Conversion successful in ${stopwatch.elapsedMilliseconds}ms! OGG data size: ${oggData.lengthInBytes} bytes.';
+          _oggData = oggData;
+        });
+      }
     } catch (e) {
       setState(() {
         _status = 'An error occurred during conversion: $e';
@@ -157,7 +182,34 @@ class _MyAppState extends State<MyApp> {
     if (_oggData == null) return;
 
     try {
-      await _audioPlayer.play(BytesSource(_oggData!));
+      // On macOS and iOS, use file path instead of bytes for better compatibility
+      if (!kIsWeb && (Platform.isMacOS || Platform.isIOS)) {
+        String? filePath = _tempOggFile;
+        
+        // Create temporary file if it doesn't exist
+        if (filePath == null || !await File(filePath).exists()) {
+          final tempDir = await getTemporaryDirectory();
+          final tempFile = File('${tempDir.path}/playback_${DateTime.now().millisecondsSinceEpoch}.ogg');
+          await tempFile.writeAsBytes(_oggData!);
+          filePath = tempFile.path;
+          _tempOggFile = filePath;
+        }
+        
+        // For iOS, use absolute path with file:// scheme and MIME type
+        if (Platform.isIOS) {
+          // iOS requires absolute path and MIME type for OGG files
+          final absolutePath = File(filePath).absolute.path;
+          final fileUri = 'file://$absolutePath';
+          await _audioPlayer.play(UrlSource(fileUri, mimeType: 'audio/ogg'));
+        } else {
+          // macOS
+          await _audioPlayer.play(UrlSource('file://$filePath'));
+        }
+      } else {
+        // On other platforms, use bytes source
+        await _audioPlayer.play(BytesSource(_oggData!));
+      }
+      
       setState(() {
         _status = 'Playing audio...';
       });
@@ -308,11 +360,14 @@ class _MyAppState extends State<MyApp> {
 
     try {
       // Get output directory
+      // Use applicationSupportDirectory for macOS to avoid sandbox permission issues
       final outputDir = kIsWeb
           ? null
           : (Platform.isAndroid || Platform.isIOS
                 ? await getApplicationDocumentsDirectory()
-                : await getDownloadsDirectory() ?? Directory.current);
+                : Platform.isMacOS
+                    ? await getApplicationSupportDirectory()
+                    : await getDownloadsDirectory() ?? await getApplicationSupportDirectory());
       final outputPath = outputDir != null
           ? '${outputDir.path}/output_${DateTime.now().millisecondsSinceEpoch}.ogg'
           : 'output_${DateTime.now().millisecondsSinceEpoch}.ogg';
