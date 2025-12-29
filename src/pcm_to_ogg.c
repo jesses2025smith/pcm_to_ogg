@@ -263,9 +263,21 @@ EXPORT
 OggOutput* encode_pcm_chunk(OggEncoderContext* ctx, float* pcm_data, long num_samples) {
     if (!ctx) return NULL;
 
-    // If header hasn't been written, return it first
+    OggOutput* header_out = NULL;
+    unsigned char* header_buf = NULL;
+    size_t header_size = 0;
+
+    // 如果 header 还没写，先生成 header，但不要提前 return（要继续消费本次 pcm）
     if (!ctx->header_written) {
-        return get_header(ctx);
+        header_out = get_header(ctx);
+        if (header_out == NULL) return NULL;
+
+        header_buf = header_out->data;
+        header_size = (size_t)header_out->size;
+
+        // 注意：header_out 结构体本身要释放，但 data 先留着拼接
+        free(header_out);
+        header_out = NULL;
     }
 
     int channels = ctx->vi.channels;
@@ -280,13 +292,9 @@ OggOutput* encode_pcm_chunk(OggEncoderContext* ctx, float* pcm_data, long num_sa
     while (i < num_samples) {
         long remaining = num_samples - i;
         long samples_to_process = remaining / channels;
-        
-        if (samples_to_process == 0 && remaining > 0) {
-            samples_to_process = 1;
-        }
-        if (samples_to_process > read_size) {
-            samples_to_process = read_size;
-        }
+
+        if (samples_to_process == 0 && remaining > 0) samples_to_process = 1;
+        if (samples_to_process > read_size) samples_to_process = read_size;
         if (samples_to_process <= 0) break;
 
         float** buffer = vorbis_analysis_buffer(&ctx->vd, samples_to_process);
@@ -308,29 +316,51 @@ OggOutput* encode_pcm_chunk(OggEncoderContext* ctx, float* pcm_data, long num_sa
                 while (!ctx->eos) {
                     int result = ogg_stream_pageout(&ctx->os, &og);
                     if (result == 0) break;
+
                     size_t new_size = output_size + og.header_len + og.body_len;
                     unsigned char* temp = realloc(output_buffer, new_size);
                     if (!temp) {
                         if (output_buffer) free(output_buffer);
+                        if (header_buf) free(header_buf);
                         return NULL;
                     }
                     output_buffer = temp;
+
                     memcpy(output_buffer + output_size, og.header, og.header_len);
                     memcpy(output_buffer + output_size + og.header_len, og.body, og.body_len);
                     output_size = new_size;
+
                     if (ogg_page_eos(&og)) ctx->eos = 1;
                 }
             }
         }
     }
 
+    // 将 header + 本次音频输出拼接
+    size_t total = header_size + output_size;
+    unsigned char* merged = NULL;
+
+    if (total > 0) {
+        merged = (unsigned char*)malloc(total);
+        if (!merged) {
+            if (output_buffer) free(output_buffer);
+            if (header_buf) free(header_buf);
+            return NULL;
+        }
+        if (header_size > 0) memcpy(merged, header_buf, header_size);
+        if (output_size > 0) memcpy(merged + header_size, output_buffer, output_size);
+    }
+
+    if (output_buffer) free(output_buffer);
+    if (header_buf) free(header_buf);
+
     OggOutput* output = malloc(sizeof(OggOutput));
     if (!output) {
-        if (output_buffer) free(output_buffer);
+        if (merged) free(merged);
         return NULL;
     }
-    output->data = output_buffer;
-    output->size = (int)output_size;
+    output->data = merged;
+    output->size = (int)total;
     return output;
 }
 
